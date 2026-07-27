@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# DLLs proprietárias da Fanuc (não redistribuir, cada um pega a sua)
+Fwlib32.dll
+fwlib*.dll
+
+# programas reais das máquinas (não versionar G-code de produção)
+programas/*
+!programas/.gitkeep
+
+dnc_config.json
+dnc_log.txt
