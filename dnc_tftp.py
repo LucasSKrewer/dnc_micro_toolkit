@@ -5,8 +5,9 @@ Irmao do focas.py e do serial_adapter.py, pro caminho WiFi: falar DIRETO com a
 caixinha DNC, sem depender do QSExplorer (o "Caminho B").
 
 >>> PROTOCOLO MAPEADO BYTE A BYTE por engenharia reversa do QSExplorer 4.06
-    (.NET, em D:\\QSExplorer): executei os construtores de pacote via reflection
-    e capturei os bytes reais. Formato abaixo esta CONFIRMADO. <<<
+    (aplicativo .NET oficial do fabricante): executei os construtores de
+    pacote via reflection e capturei os bytes reais. Formato abaixo esta
+    CONFIRMADO. <<<
 
 FORMATO DO FIO:
   - Opcode: 2 bytes big-endian no inicio de TODO pacote.
