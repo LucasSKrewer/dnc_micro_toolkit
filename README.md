@@ -1,72 +1,74 @@
 # DNC Micro Toolkit
 
-Ferramentas em Python para transferir programas G-code (enviar/receber) entre
-um PC/servidor e máquinas CNC, por três caminhos diferentes — sem depender de
-software proprietário tipo CIMCO/DNC comercial.
+Python tools to transfer G-code programs (send/receive) between a PC/server and CNC
+machines over three different transports — with no dependency on proprietary DNC
+software such as CIMCO.
 
-## O que tem aqui
+Includes a **reverse-engineered client for a commercial WiFi DNC box**, whose
+proprietary protocol is documented byte by byte in this repository.
 
-| Caminho | Arquivo(s) | Quando usar |
+## What's in here
+
+| Transport | File(s) | When to use |
 |---|---|---|
-| **FOCAS (Fanuc)** | `focas.py`, `foco_teste.py`, `foco_transfer.py` | Controles Fanuc com Ethernet/FOCAS liberado (30i/31i/32i, 0i com a opção). Transferência via rede, sem hardware extra. |
-| **Serial (RS-232)** | `serial_adapter.py` | Qualquer controle não-Fanuc (ou Fanuc antigo sem Ethernet) que só tenha porta serial — Romi, Siemens Sinumerik, etc. Funciona direto ou como agente num Raspberry Pi ligado por USB-FTDI. |
-| **Caixinha DNC de rede** | `dnc_tftp.py`, `dnc_webdav.py` | Cliente para uma caixinha DNC WiFi (tipo Micro DNC 2), falando o protocolo TFTP customizado dela diretamente — sem o software Windows que normalmente acompanha o aparelho. O `dnc_webdav.py` expõe a caixinha como pasta de rede (WebDAV). |
-| **Tela web** | `dnc_web.py` | Interface simples (Flask) pra rodar num Raspberry Pi: botão "Enviar" + recebimento automático em segundo plano. Pensada pra ficar ao lado da máquina, acessível do celular/PC de qualquer lugar da rede. |
+| **FOCAS (Fanuc)** | `focas.py`, `foco_teste.py`, `foco_transfer.py` | Fanuc controls with Ethernet/FOCAS enabled (30i/31i/32i, or 0i with the option). Network transfer, no extra hardware. |
+| **Serial (RS-232)** | `serial_adapter.py` | Any non-Fanuc control (or older Fanuc without Ethernet) that only exposes a serial port — Romi, Siemens Sinumerik, etc. Runs directly or as an agent on a Raspberry Pi connected via USB-FTDI. |
+| **Network DNC box** | `dnc_tftp.py`, `dnc_webdav.py` | Client for a WiFi DNC box (Micro DNC 2 type), speaking its custom TFTP protocol directly — without the Windows software that normally ships with the device. `dnc_webdav.py` exposes the box as a network share (WebDAV). |
+| **Web UI** | `dnc_web.py` | Minimal Flask interface meant to run on a Raspberry Pi: a "Send" button plus automatic background receiving. Designed to sit next to the machine and be reachable from a phone or PC anywhere on the network. |
 
-Tudo configurado num único lugar: `config.py`.
+Everything is configured in a single place: `config.py`.
 
-## Por que existe
+## Why it exists
 
-Caixinhas DNC comerciais resolvem a transferência mas são um beco sem saída —
-protocolo fechado, não integra com nada. Este projeto nasceu de duas frentes:
+Commercial DNC boxes solve the transfer problem but are a dead end — closed protocol,
+no integration with anything. This project grew out of two observations:
 
-1. **FOCAS não é só transferência** — a mesma biblioteca que passa programa
-   também lê status/contadores da máquina, então usar FOCAS na transferência
-   já deixa telemetria futura pronta, de graça.
-2. **A caixinha comprada virou o gabarito** — o protocolo dela (TFTP sobre
-   UDP/69, mas com opcodes e formato de pacote próprios, nada a ver com TFTP
-   padrão) foi mapeado por engenharia reversa do instalador oficial (captura
-   de bytes via reflection), documentado byte a byte em `dnc_tftp.py`. Isso
-   abriu a porta pra rodar a mesma lógica num Raspberry Pi com um adaptador
-   USB-FTDI — a "caixinha própria", bem mais barata por máquina.
+1. **FOCAS is not just about transfers.** The same library that pushes a program also
+   reads machine status and counters, so using FOCAS for transfer gets future telemetry
+   ready for free.
 
-O `serial_adapter.py` foi inspirado (não copiado) no projeto OpenDNC, lógica
-própria pra evitar o copyleft GPL e manter o estilo do resto do projeto.
+2. **The purchased box became the blueprint.** Its protocol — TFTP over UDP/69, but with
+   its own opcodes and packet format, unrelated to standard TFTP — was mapped by reverse
+   engineering the official installer (capturing bytes via reflection) and is documented
+   byte by byte in `dnc_tftp.py`. That opened the door to running the same logic on a
+   Raspberry Pi with a USB-FTDI adapter: a DIY box at a fraction of the per-machine cost.
 
-## Instalação
+`serial_adapter.py` was inspired by (not copied from) the OpenDNC project — the logic is
+original, both to avoid the GPL copyleft and to stay consistent with the rest of the codebase.
 
-Veja [`INSTALACAO.md`](INSTALACAO.md) para o caminho FOCAS (Windows,
-Python 32-bit + `Fwlib32.dll` da Fanuc — não incluída aqui, vem com a máquina
-ou o SDK oficial).
+## Installation
 
-Para o caminho serial num Raspberry Pi:
+See [`INSTALACAO.md`](INSTALACAO.md) for the FOCAS path (Windows, 32-bit Python plus
+Fanuc's `Fwlib32.dll` — not included here; it ships with the machine or the official SDK).
+
+For the serial path on a Raspberry Pi:
+
 ```bash
 sudo apt install -y python3-pip
 pip3 install pyserial
 python3 serial_adapter.py
 ```
 
-Dependências por script — veja [`requirements.txt`](requirements.txt).
+Per-script dependencies are listed in [`requirements.txt`](requirements.txt).
 
-## Protocolo da caixinha DNC (resumo técnico)
+## DNC box protocol (technical summary)
 
-- Transporte: UDP porta 69, blocos de 512 bytes, timeout 2s, até 10 reenvios.
-- Opcode de 2 bytes big-endian no início de todo pacote (não é o TFTP padrão
-  da RFC 1350 — reaproveita a porta 69, mas o formato é proprietário).
-- Comandos cobertos: status, info, listar diretório (com subpastas), baixar,
-  enviar, apagar, renomear, criar pasta, mandar mensagem pro operador.
-- Detalhes completos e opcodes comentados em `dnc_tftp.py`.
+- **Transport:** UDP port 69, 512-byte blocks, 2 s timeout, up to 10 retransmissions.
+- **Framing:** a 2-byte big-endian opcode at the start of every packet. This is *not*
+  standard RFC 1350 TFTP — it reuses port 69, but the packet format is proprietary.
+- **Commands covered:** status, info, directory listing (including subfolders), download,
+  upload, delete, rename, create folder, and send a message to the operator.
+- Full details and annotated opcodes are in `dnc_tftp.py`.
 
-## Limitações conhecidas
+## Known limitations
 
-- O protocolo controla arquivo/transferência, não a navegação da telinha do
-  aparelho.
-- Nomes de arquivo com caracteres especiais podem ser alterados pelo
-  firmware do aparelho (limitação do FatFs dele, não do cliente).
-- As funções FOCAS de transferência (`cnc_upstart4`/`cnc_dwnstart4` etc.)
-  variam de formato conforme a versão do controle — pontos marcados com
-  `# AJUSTE?` em `foco_transfer.py`.
+- The protocol controls files and transfers, not navigation of the device's own display.
+- Filenames with special characters may be altered by the device firmware — a limitation
+  of its FatFs implementation, not of this client.
+- The FOCAS transfer functions (`cnc_upstart4` / `cnc_dwnstart4`, etc.) vary in format
+  across control versions. The affected spots are marked with `# AJUSTE?` in
+  `foco_transfer.py`.
 
-## Licença
+## License
 
-Ver [`LICENSE`](LICENSE).
+See [`LICENSE`](LICENSE).
