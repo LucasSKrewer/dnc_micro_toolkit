@@ -1,0 +1,38 @@
+# systemd unit for the shop-floor panel on a Raspberry Pi.
+#
+#   sudo cp dnc-web.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now dnc-web
+#   journalctl -u dnc-web -f          # live log
+#
+# Adjust User and WorkingDirectory to wherever the toolkit was cloned.
+
+[Unit]
+Description=DNC Micro Toolkit - shop-floor panel
+Documentation=https://github.com/LucasSKrewer/dnc_micro_toolkit
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=dialout
+WorkingDirectory=/home/pi/dnc_micro_toolkit
+ExecStart=/usr/bin/python3 dnc_web.py
+
+# One Pi per machine: name it here instead of editing config.py on every unit.
+Environment=DNCKIT_MACHINE_NAME=MACHINE-01
+Environment=DNCKIT_TRANSPORT=serial
+Environment=DNCKIT_SERIAL_PORT=/dev/ttyUSB0
+Environment=PYTHONUNBUFFERED=1
+
+# Only needed for TRANSPORT=dnc-box: the DNC box ignores anything that does not
+# come FROM local UDP port 69, and ports below 1024 are privileged on Linux.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+# The machine must not be left without a panel because of one crash.
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
