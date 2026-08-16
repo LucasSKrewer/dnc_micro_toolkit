@@ -1,39 +1,44 @@
 """
-dnc_webdav.py - Expõe a memória da caixinha Micro DNC 2 como uma PASTA DE REDE (WebDAV).
+dnc_webdav.py - Expose the Micro DNC 2 box's memory as a NETWORK FOLDER (WebDAV).
 
-Ponte: wsgidav (servidor WebDAV) + um provider que fala o protocolo TFTP revertido
-(via dnc_tftp.py). Assim você mapeia a caixinha no Windows Explorer como um drive
-(http://<ip-deste-pc>:8008/) e lê/escreve os programas direto — o CIMCO ou qualquer
-programa enxerga como pasta comum.
+A bridge: wsgidav (WebDAV server) plus a provider that speaks the reverse-engineered
+protocol through dnc_tftp.py. Map the box in Windows Explorer as a drive
+(http://<ip-of-this-pc>:8008/) and read/write programs directly - CIMCO, or any
+other program, just sees an ordinary folder.
 
-Rodar (com um venv que tenha wsgidav + cheroot instalados):
+Run (in a venv with wsgidav + cheroot installed):
    python dnc_webdav.py
 
-Mapear no Windows: Explorer -> "Mapear unidade de rede" -> http://<ip>:8008/
-(ou:  net use Z: http://<ip>:8008/ )
+Map on Windows: Explorer -> "Map network drive" -> http://<ip>:8008/
+(or:  net use Z: http://<ip>:8008/ )
+
+NOTE: writes go through the same verified upload as everywhere else - the file
+is read back off the device and compared. A silent partial write into a CNC
+program is not an acceptable failure mode, even from Explorer.
 """
 import io
 import os
 import sys
-import time
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import config
 import dnc_tftp as dnc
 
-from wsgidav.dav_provider import DAVProvider, DAVCollection, DAVNonCollection
 from wsgidav.dav_error import DAVError, HTTP_FORBIDDEN
+from wsgidav.dav_provider import DAVCollection, DAVNonCollection, DAVProvider
 
-PORT = 8008   # troque para 80 se quiser rodar como servico fixo (precisa de admin/root)
+PORT = 8008   # change to 80 for a fixed service (needs admin/root)
 
 
-def _qual(devpath, nome):
-    """Nome qualificado do arquivo no aparelho: raiz='ARQ', subpasta='0:program\\ARQ'."""
-    return f"{devpath}\\{nome}" if devpath else nome
+def _qualify(devpath, name):
+    """Qualified name on the device: root='FILE', subfolder='0:program\\FILE'."""
+    return f"{devpath}\\{name}" if devpath else name
 
 
 class _WriteBuf(io.BytesIO):
-    """Captura os bytes ANTES do wsgidav fechar o buffer (ele fecha antes do end_write)."""
+    """Capture the bytes BEFORE wsgidav closes the buffer (it closes before end_write)."""
     def __init__(self, dnc_file):
         super().__init__()
         self._file = dnc_file
@@ -71,7 +76,7 @@ class DncFile(DAVNonCollection):
         return False
 
     def get_content(self):
-        return io.BytesIO(dnc.baixar(self.qualified))
+        return io.BytesIO(dnc.download(self.qualified))
 
     def begin_write(self, *, content_type=None):
         self._data = None
@@ -84,7 +89,7 @@ class DncFile(DAVNonCollection):
             try:
                 with open(tmp, "wb") as f:
                     f.write(self._data)
-                dnc.enviar(tmp, self.qualified)
+                dnc.upload(tmp, self.qualified, verify=config.VERIFY_UPLOAD)
             finally:
                 os.remove(tmp)
         self._data = None
@@ -104,22 +109,22 @@ class DncFile(DAVNonCollection):
 class DncCollection(DAVCollection):
     def __init__(self, path, environ, devpath):
         super().__init__(path, environ)
-        self.devpath = devpath  # "" = raiz 0:, ou "0:program"
+        self.devpath = devpath  # "" = root 0:, or "0:program"
 
-    def _itens(self):
-        return [e for e in dnc.listar(self.devpath) if e["nome"] not in (".", "..")]
+    def _items(self):
+        return [e for e in dnc.list_dir(self.devpath) if e["name"] not in (".", "..")]
 
     def get_member_names(self):
-        return [e["nome"] for e in self._itens()]
+        return [e["name"] for e in self._items()]
 
     def get_member(self, name):
-        for e in self._itens():
-            if e["nome"] == name:
+        for e in self._items():
+            if e["name"] == name:
                 child = self.path.rstrip("/") + "/" + name
-                if e["pasta"]:
+                if e["is_dir"]:
                     dp = ("0:" + name) if self.devpath == "" else (self.devpath + "\\" + name)
                     return DncCollection(child + "/", self.environ, dp)
-                return DncFile(child, self.environ, _qual(self.devpath, name), e["tamanho"])
+                return DncFile(child, self.environ, _qualify(self.devpath, name), e["size"])
         return None
 
     def get_last_modified(self):
@@ -127,16 +132,16 @@ class DncCollection(DAVCollection):
 
     def create_empty_resource(self, name):
         child = self.path.rstrip("/") + "/" + name
-        return DncFile(child, self.environ, _qual(self.devpath, name), 0)
+        return DncFile(child, self.environ, _qualify(self.devpath, name), 0)
 
     def create_collection(self, name):
-        raise DAVError(HTTP_FORBIDDEN)  # criar pasta no aparelho: fora do escopo do protótipo
+        raise DAVError(HTTP_FORBIDDEN)  # creating folders on the device: out of scope
 
     def support_recursive_delete(self):
         return False
 
     def delete(self):
-        raise DAVError(HTTP_FORBIDDEN)  # não apagar pastas do sistema do aparelho
+        raise DAVError(HTTP_FORBIDDEN)  # never delete the device's system folders
 
 
 class DncProvider(DAVProvider):
@@ -148,36 +153,37 @@ class DncProvider(DAVProvider):
         p = path.strip("/")
         if p == "":
             return DncCollection("/", environ, "")
-        segs = p.split("/")
-        if len(segs) == 1:
-            return DncCollection("/", environ, "").get_member(segs[0])
-        if len(segs) == 2:
-            pai = DncCollection("/" + segs[0] + "/", environ, "0:" + segs[0])
-            return pai.get_member(segs[1])
+        segments = p.split("/")
+        if len(segments) == 1:
+            return DncCollection("/", environ, "").get_member(segments[0])
+        if len(segments) == 2:
+            parent = DncCollection("/" + segments[0] + "/", environ, "0:" + segments[0])
+            return parent.get_member(segments[1])
         return None
 
 
 def main():
-    from wsgidav.wsgidav_app import WsgiDAVApp
     from cheroot import wsgi
+    from wsgidav.wsgidav_app import WsgiDAVApp
 
-    config = {
+    dav_config = {
         "host": "0.0.0.0",
         "port": PORT,
         "provider_mapping": {"/": DncProvider()},
-        "simple_dc": {"user_mapping": {"*": True}},   # anônimo (LAN confiável)
+        "simple_dc": {"user_mapping": {"*": True}},   # anonymous (trusted LAN)
         "http_authenticator": {"accept_basic": True, "accept_digest": False,
                                "default_to_digest": False},
-        "lock_storage": True,     # LOCK/UNLOCK (o Windows precisa p/ escrever)
+        "lock_storage": True,     # LOCK/UNLOCK (Windows needs it to write)
         "property_manager": True,
-        "dir_browser": {"enable": True},   # listagem HTML se abrir no navegador
+        "dir_browser": {"enable": True},   # HTML listing if opened in a browser
         "verbose": 2,
         "logging": {"enable_loggers": []},
     }
-    app = WsgiDAVApp(config)
+    app = WsgiDAVApp(dav_config)
     server = wsgi.Server(("0.0.0.0", PORT), app)
-    print(f"WebDAV da caixinha ({dnc.DNC_IP}) em  http://<ip-deste-pc>:{PORT}/")
-    print(f"Mapear: Explorer -> Mapear unidade de rede -> http://<ip>:{PORT}/  (ou net use Z: http://<ip>:{PORT}/)")
+    print(f"WebDAV bridge to the DNC box ({dnc.DNC_IP}) on  http://<ip-of-this-pc>:{PORT}/")
+    print(f"Map it: Explorer -> Map network drive -> http://<ip>:{PORT}/  "
+          f"(or: net use Z: http://<ip>:{PORT}/)")
     try:
         server.start()
     except KeyboardInterrupt:
