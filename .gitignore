@@ -2,14 +2,17 @@ __pycache__/
 *.pyc
 venv/
 .venv/
+.pytest_cache/
 
-# DLLs proprietárias da Fanuc (não redistribuir, cada um pega a sua)
+# Fanuc's proprietary DLLs (not redistributable - get your own)
 Fwlib32.dll
 fwlib*.dll
 
-# programas reais das máquinas (não versionar G-code de produção)
-programas/*
-!programas/.gitkeep
+# real machine programs (never version production G-code)
+programs/*
+!programs/.gitkeep
 
+# per-install settings and the transfer record
 dnc_config.json
+dnc_log.csv
 dnc_log.txt

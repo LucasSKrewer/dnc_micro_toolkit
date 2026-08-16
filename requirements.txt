@@ -1,13 +1,17 @@
-# Instale só o que for usar:
-#   pip install pyserial            -> serial_adapter.py, dnc_web.py
+# Install only what you actually use:
+#   pip install pyserial             -> serial_adapter.py, serial transport
 #   pip install flask                -> dnc_web.py
 #   pip install wsgidav cheroot      -> dnc_webdav.py
 #
-# focas.py / foco_teste.py / foco_transfer.py não precisam de pip:
-# usam ctypes puro (só exigem Python 32-bit + Fwlib32.dll da Fanuc).
-# dnc_tftp.py não precisa de nada externo (só socket/struct, builtin).
+# focas.py / focas_probe.py / focas_transfer.py need no pip at all: plain ctypes
+# (they only require 32-bit Python + Fanuc's Fwlib32.dll).
+# dnc_tftp.py needs nothing external either (socket/struct are builtins).
 
 pyserial
 flask
 wsgidav
 cheroot
+
+# Running the test suite (no hardware needed):
+#   pip install pytest && python -m pytest tests/ -q
+pytest
