@@ -11,6 +11,7 @@ which of Q1/Q2/Q3 it settled would be useless at the machine.
 No hardware required.
 """
 
+import socket
 import struct
 
 import pytest
@@ -44,7 +45,11 @@ class BoxSimulator:
 
     def recvfrom(self, _n):
         if not self._inbox:
-            raise TimeoutError()
+            # socket.timeout, NOT the builtin TimeoutError: they are the same
+            # class only from Python 3.10 on. Under 3.9 the builtin sails past
+            # the except socket.timeout in _exchange, and the toolkit reports a
+            # bare TimeoutError instead of its own DncTimeout.
+            raise socket.timeout()
         return self._inbox.pop(0), ("sim", 69)
 
     def settimeout(self, _t):  pass
