@@ -61,6 +61,12 @@ class Transport:
     def close(self):
         pass
 
+    @classmethod
+    def from_config(cls):
+        """Build this transport with whatever config.py says. Overridden where a
+        transport actually has a setting - see DncBoxTransport."""
+        return cls()
+
 
 # --------------------------------------------------------------------- serial
 
@@ -222,6 +228,14 @@ class DncBoxTransport(Transport):
         self._dnc = dnc_tftp
         self.verify = verify
 
+    @classmethod
+    def from_config(cls):
+        # Without this, VERIFY_UPLOAD was silently ignored on every path except
+        # dnc_webdav.py, which passes it explicitly - so turning verification off
+        # (the documented escape hatch if the firmware normalises line endings)
+        # had no effect at all on the panel or the CLI.
+        return cls(verify=getattr(config, "VERIFY_UPLOAD", True))
+
     def describe(self):
         return f"DNC box at {self._dnc.DNC_IP}:{self._dnc.DNC_PORT}"
 
@@ -304,4 +318,4 @@ def build(name=None):
             f"Unknown transport {name!r}. Valid values for TRANSPORT in config.py: "
             + ", ".join(sorted(TRANSPORTS))
         ) from None
-    return factory()
+    return factory.from_config()
