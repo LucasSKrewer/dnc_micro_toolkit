@@ -189,9 +189,18 @@ def test_log_survives_being_reread(panel):
     assert [r["name"] for r in rows] == ["O2", "O1"]   # newest first
 
 
-def test_log_never_raises_when_the_path_is_unwritable(panel, monkeypatch):
-    """A logging failure must not abort a transfer that already succeeded."""
-    monkeypatch.setattr(config, "LOG_FILE", "Z:\\nope\\cannot\\write.csv")
+def test_log_never_raises_when_the_path_is_unwritable(panel, monkeypatch, tmp_path):
+    """A logging failure must not abort a transfer that already succeeded.
+
+    The unwritable path is built by putting a REGULAR FILE where a directory
+    would have to be. A drive letter like Z:\\nope would do it on Windows but is
+    a perfectly valid relative filename on Linux, so the write would quietly
+    succeed there and the test would pass without testing anything.
+    """
+    blocker = tmp_path / "this-is-a-file-not-a-folder"
+    blocker.write_text("x")
+    monkeypatch.setattr(config, "LOG_FILE", str(blocker / "log.csv"))
+
     transfer_log.record("send", "O1", 10, "ok")        # must not raise
     assert transfer_log.tail() == []
 
