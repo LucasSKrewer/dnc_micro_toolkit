@@ -53,14 +53,38 @@ def record(direction, name, size=None, result="ok", detail="", transport=""):
     return row
 
 
+# How much of the end of the file to read. Comfortably more than any plausible
+# page of entries, and a hard ceiling on the work a page render can cost.
+TAIL_BYTES = 64 * 1024
+
+
 def tail(n=20):
-    """Most recent entries first. Returns [] when there is no log yet."""
+    """Most recent entries first. Returns [] when there is no log yet.
+
+    Reads only the END of the file. The panel renders this on every load and
+    reloads itself every 20 seconds, so parsing the whole log would mean a Pi
+    re-reading a year of history several times a minute, for twelve rows.
+
+    Safe to slice by lines because record() flattens newlines out of every
+    field, so no entry can span more than one line.
+    """
     path = config.LOG_FILE
     if not os.path.exists(path):
         return []
     try:
-        with _lock, open(path, newline="", encoding="utf-8") as f:
-            rows = list(csv.DictReader(f))
+        with _lock, open(path, "rb") as f:
+            size = os.fstat(f.fileno()).st_size
+            f.seek(max(0, size - TAIL_BYTES))
+            blob = f.read().decode("utf-8", "replace")
     except Exception:
         return []
+
+    lines = blob.splitlines()
+    if size > TAIL_BYTES and lines:
+        lines = lines[1:]            # the first line is probably cut in half
+    rows = []
+    for fields in csv.reader(lines[-(n + 1):]):
+        if not fields or fields[0] == FIELDS[0]:      # skip the header row
+            continue
+        rows.append(dict(zip(FIELDS, fields)))
     return rows[-n:][::-1]

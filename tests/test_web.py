@@ -11,6 +11,8 @@ redirect.
 No hardware required.
 """
 
+import os
+
 import config
 import dnc_web
 import pytest
@@ -203,6 +205,30 @@ def test_log_never_raises_when_the_path_is_unwritable(panel, monkeypatch, tmp_pa
 
     transfer_log.record("send", "O1", 10, "ok")        # must not raise
     assert transfer_log.tail() == []
+
+
+def test_log_reads_only_the_tail_of_a_long_history(panel, monkeypatch):
+    """A Pi runs for a year and the panel re-renders every 20 seconds. Parsing
+    the whole log for twelve rows is work that grows without bound."""
+    monkeypatch.setattr(transfer_log, "TAIL_BYTES", 2048)
+    for i in range(400):
+        transfer_log.record("send", f"O{i:04d}", i, "ok", "x" * 40, "serial")
+
+    assert os.path.getsize(config.LOG_FILE) > transfer_log.TAIL_BYTES
+
+    rows = transfer_log.tail(5)
+    assert [r["name"] for r in rows] == [f"O{i:04d}" for i in (399, 398, 397, 396, 395)]
+    assert rows[0]["result"] == "ok"
+    assert all(r["machine"] == "LATHE-01" for r in rows)
+
+
+def test_log_tail_is_correct_when_the_file_is_smaller_than_the_window(panel):
+    """The small-file path still has to skip the header rather than return it."""
+    transfer_log.record("send", "O1", 10, "ok", "", "serial")
+    rows = transfer_log.tail(20)
+    assert len(rows) == 1
+    assert rows[0]["name"] == "O1"
+    assert rows[0]["timestamp"] != "timestamp"
 
 
 def test_log_detail_is_flattened_to_one_line(panel):
