@@ -12,7 +12,8 @@ fwlib*.dll
 programs/*
 !programs/.gitkeep
 
-# per-install settings and the transfer record
+# per-install settings, the transfer record and acceptance output
 dnc_config.json
 dnc_log.csv
 dnc_log.txt
+hardware_check_report.txt
