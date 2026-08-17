@@ -62,7 +62,7 @@ def _stopbits(n):
     return {1: serial.STOPBITS_ONE, 2: serial.STOPBITS_TWO}[n]
 
 
-def open_port(read_timeout=2):
+def open_port(read_timeout=2, write_timeout=15):
     """Open the serial port with the parameters from config.py."""
     _require_pyserial()
     flow = config.SERIAL_FLOW.lower()
@@ -75,7 +75,7 @@ def open_port(read_timeout=2):
         xonxoff  = (flow == "xonxoff"),   # software handshake (XON/XOFF)
         rtscts   = (flow == "rtscts"),    # hardware handshake (RTS/CTS)
         timeout  = read_timeout,
-        write_timeout = 15,
+        write_timeout = write_timeout,
     )
 
 
@@ -106,6 +106,72 @@ def send(path):
         return n
     finally:
         port.close()
+
+
+# ---------------------------------------------------------------- drip-feed
+#
+# "Copy to memory" (send() above) needs the whole program to fit in the
+# control's memory. Drip-feed does not: the control runs in DNC/tape mode and
+# executes the program AS IT ARRIVES, which is the only way to run a mould or a
+# 3D finishing path on a control with 64 KB of program memory. It is also the
+# actual reason shops buy the commercial boxes.
+#
+# *** NEVER RUN AGAINST A REAL MACHINE YET. *** Read this before you do:
+#
+#   - The machine is CUTTING while this streams. If the feed stops, the machine
+#     stops mid-cut; if the control's buffer overflows, it executes garbage.
+#     Flow control is not a nicety here, it is the safety mechanism.
+#   - With SERIAL_FLOW="xonxoff" the OS driver honours the control's XOFF/XON
+#     for us and the DC1/DC3 bytes never reach this code. That is the intended
+#     setup and the one to test first, on a scrap part, in single block, with
+#     the feed override at its minimum and a hand on the feed hold.
+#   - write_timeout must be generous: a control can legitimately hold XOFF for
+#     minutes during a slow finishing pass. The 15 s default used elsewhere
+#     would abort a perfectly healthy job, so drip-feed raises it.
+
+DRIP_CHUNK = 128            # bytes per write; small enough to abort quickly
+DRIP_WRITE_TIMEOUT = 300    # seconds a single blocked write may wait
+
+
+class DripAborted(RuntimeError):
+    """The stream was stopped before the end of the program."""
+
+    def __init__(self, sent, total):
+        super().__init__(f"drip-feed aborted after {sent} of {total} bytes")
+        self.sent = sent
+        self.total = total
+
+
+def drip_feed(port, data, on_progress=None, stop_event=None, pace=0.0,
+              chunk=DRIP_CHUNK):
+    """Stream `data` to an already-open port, a chunk at a time.
+
+    Blocking by design: it returns when the whole program has gone out, which
+    for a real job means minutes. `on_progress(sent, total)` is called after
+    every chunk, and `stop_event` is checked between chunks - that is the
+    granularity at which a job can be aborted.
+
+    `pace` sets a minimum number of seconds per chunk. Leave it at 0 when flow
+    control is working; it exists as a crude brake for a control whose
+    handshake turns out to be unreliable.
+    """
+    total = len(data)
+    sent = 0
+    for i in range(0, total, chunk):
+        if stop_event is not None and stop_event.is_set():
+            raise DripAborted(sent, total)
+        started = time.monotonic()
+        piece = data[i:i + chunk]
+        port.write(piece)
+        port.flush()            # blocks while the control holds XOFF - intended
+        sent += len(piece)
+        if on_progress is not None:
+            on_progress(sent, total)
+        if pace:
+            slack = pace - (time.monotonic() - started)
+            if slack > 0:
+                time.sleep(slack)
+    return sent
 
 
 # How long the line must stay quiet, mid-program, before we call it finished.

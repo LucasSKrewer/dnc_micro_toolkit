@@ -33,9 +33,14 @@ class Transport:
     can_listen = False
     can_browse = False
     can_fetch = False
+    can_drip = False
 
     def send(self, local_path, remote_name=None):
         """Push a program to the machine. Returns the number of bytes sent."""
+        raise NotImplementedError
+
+    def drip_feed(self, local_path, on_progress=None, stop_event=None):
+        """Stream a program while the machine executes it. Blocks for the whole job."""
         raise NotImplementedError
 
     def browse(self):
@@ -77,6 +82,7 @@ class SerialTransport(Transport):
 
     name = "serial"
     can_listen = True
+    can_drip = True
 
     def __init__(self):
         import serial_adapter
@@ -118,6 +124,35 @@ class SerialTransport(Transport):
             n = port.write(data)
             port.flush()
         return n
+
+    def drip_feed(self, local_path, on_progress=None, stop_event=None, pace=0.0):
+        """Stream a program to a control running in DNC/tape mode.
+
+        Holds the port lock for the entire job - minutes, not milliseconds. That
+        is deliberate: it is one wire and the machine is cutting from it, so the
+        listener must not interleave reads and eat the flow-control bytes.
+        Automatic receiving is therefore paused until the job finishes.
+
+        NEVER RUN AGAINST A REAL MACHINE without reading the warning in
+        serial_adapter.py first.
+        """
+        with open(local_path, "rb") as f:
+            data = self._sa._wrap_tape(f.read())
+
+        with self._lock:
+            if self._receiving:
+                raise TransportBusy(
+                    "A program is arriving from the machine right now - refusing "
+                    "to start a drip-feed on the same wire."
+                )
+            port = self._port_open()
+            previous_timeout = port.write_timeout
+            port.write_timeout = self._sa.DRIP_WRITE_TIMEOUT
+            try:
+                return self._sa.drip_feed(port, data, on_progress=on_progress,
+                                          stop_event=stop_event, pace=pace)
+            finally:
+                port.write_timeout = previous_timeout
 
     def listen(self, on_program, stop_event):
         buf = bytearray()
