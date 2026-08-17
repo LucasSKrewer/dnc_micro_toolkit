@@ -235,6 +235,84 @@ def test_download_does_not_write_a_partial_file(monkeypatch, fast, tmp_path):
     assert not dest.exists(), "a truncated program must never reach the disk"
 
 
+def test_download_stops_at_a_known_size_without_asking_past_the_end(monkeypatch, fast):
+    """A file that is an exact multiple of 512 must not cost a request beyond it.
+
+    Without the size, the end of file can only be inferred from a short block, so
+    a 512-byte program always asks for block 2 - and a firmware that answers that
+    with silence would make a complete, correct download fail as a timeout.
+    """
+    body = b"Z" * d.BLOCK
+
+    def script(pkt, _n):
+        if d.opcode_of(pkt) == d.OP_DL_OPEN:
+            return struct.pack(">H", 55)
+        n = struct.unpack(">I", pkt[2:6])[0]
+        return _data(1, body) if n == 1 else None      # silent past the end
+
+    box = install(monkeypatch, script)
+    assert d.download("O1", expected_size=len(body)) == body
+    assert [d.opcode_of(p) for p in box.sent].count(d.OP_REQDATA) == 1
+
+
+def test_download_without_a_size_still_asks_past_an_exact_multiple(monkeypatch, fast):
+    """Documents exactly why the size matters - this is the hazardous path."""
+    def script(pkt, _n):
+        if d.opcode_of(pkt) == d.OP_DL_OPEN:
+            return struct.pack(">H", 55)
+        n = struct.unpack(">I", pkt[2:6])[0]
+        return _data(1, b"Z" * d.BLOCK) if n == 1 else None
+
+    install(monkeypatch, script)
+    with pytest.raises(d.DncTimeout):
+        d.download("O1")
+
+
+def test_download_stops_when_the_device_holds_fewer_bytes_than_expected(monkeypatch, fast):
+    """A normalising firmware returns FEWER bytes than were sent to it.
+
+    Terminating only on the expected size would then never terminate: the device
+    keeps answering with empty blocks and the count never reaches the target.
+    The short-block rule has to stay in force even when a size is known.
+    """
+    stored = b"G01 X10\n"                      # 8 bytes on the device
+
+    def script(pkt, _n):
+        if d.opcode_of(pkt) == d.OP_DL_OPEN:
+            return struct.pack(">H", 55)
+        n = struct.unpack(">I", pkt[2:6])[0]
+        return _data(n, stored if n == 1 else b"")
+
+    box = install(monkeypatch, script)
+    assert d.download("O1", expected_size=999) == stored
+    assert [d.opcode_of(p) for p in box.sent].count(d.OP_REQDATA) == 1
+
+
+def test_download_rejects_more_bytes_than_expected(monkeypatch, fast):
+    def script(pkt, _n):
+        if d.opcode_of(pkt) == d.OP_DL_OPEN:
+            return struct.pack(">H", 55)
+        return _data(1, b"X" * 20)
+
+    install(monkeypatch, script)
+    with pytest.raises(d.DncProtocolError, match="20 bytes where 10"):
+        d.download("O1", expected_size=10)
+
+
+def test_verify_reads_back_using_the_size_it_already_knows(monkeypatch, fast):
+    """Verification of a 512-byte program must not depend on a block past the end."""
+    body = b"Z" * d.BLOCK
+
+    def script(pkt, _n):
+        if d.opcode_of(pkt) == d.OP_DL_OPEN:
+            return struct.pack(">H", 55)
+        n = struct.unpack(">I", pkt[2:6])[0]
+        return _data(1, body) if n == 1 else None
+
+    install(monkeypatch, script)
+    assert d.verify_remote("O1", body) is True
+
+
 def test_download_short_block_ends_the_file(monkeypatch, fast):
     def script(pkt, _n):
         if d.opcode_of(pkt) == d.OP_DL_OPEN:

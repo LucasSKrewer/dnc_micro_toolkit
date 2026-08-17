@@ -388,3 +388,13 @@ def test_build_uses_the_configured_transport(monkeypatch):
     import config
     monkeypatch.setattr(config, "TRANSPORT", "serial")
     assert isinstance(T.build(), T.SerialTransport)
+
+
+@pytest.mark.parametrize("configured", [True, False])
+def test_build_honours_verify_upload(monkeypatch, configured):
+    """The documented escape hatch when the firmware turns out to normalise line
+    endings. It reached only dnc_webdav before, so turning it off did nothing to
+    the panel or the CLI - and there was no error to say so."""
+    import config
+    monkeypatch.setattr(config, "VERIFY_UPLOAD", configured)
+    assert T.build("dnc-box").verify is configured

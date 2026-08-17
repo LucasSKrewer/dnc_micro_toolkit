@@ -202,14 +202,43 @@ def test_it_stops_cleanly_when_the_box_is_unreachable(rig, capsys):
 
 
 def test_it_refuses_to_overwrite_an_existing_canary(rig):
+    """The guard has to STOP the run, not just mention it in the report.
+
+    It used to print "Refusing to overwrite it" and then the next check
+    overwrote the file and the cleanup check deleted it.
+    """
     install, report = rig
-    install(BoxSimulator(files={hc.CANARY: b"someone elses file"}))
+    original = b"someone elses file"
+    box = install(BoxSimulator(files={hc.CANARY: original}))
 
     hc.main()
 
     guard = outcomes()["Canary name is free (nothing will be overwritten)"]
     assert guard["status"] == "FAIL"
     assert "Refusing to overwrite" in guard["detail"]
+
+    assert box.files[hc.CANARY] == original, "the guard fired and the file was written anyway"
+    assert "Upload is stored byte for byte" not in outcomes()
+    assert outcomes()["Write checks"]["status"] == "SKIP"
+
+
+def test_it_refuses_to_write_when_the_listing_failed(rig):
+    """No listing means no way to know the name is free - so it must not write.
+
+    state.get("entries", []) used to make an unavailable listing look like an
+    empty box, and the guard passed without having checked anything.
+    """
+    install, report = rig
+    box = install(BoxSimulator(files={"O1.NC": b"%\nX\n%\n"},
+                               quiet_instead_of_terminator=True))
+    before = dict(box.files)
+
+    hc.main()
+
+    guard = outcomes()["Canary name is free (nothing will be overwritten)"]
+    assert guard["status"] == "FAIL"
+    assert "Refusing to write blind" in guard["detail"]
+    assert box.files == before, "wrote to the box without knowing what was on it"
 
 
 def test_read_only_mode_never_writes(rig, monkeypatch):

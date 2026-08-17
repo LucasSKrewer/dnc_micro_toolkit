@@ -290,9 +290,17 @@ def _accept_block(block):
     return accept
 
 
-def download(remote_name, local_path=None):
+def download(remote_name, local_path=None, expected_size=None):
     """Pull a file from the box to the PC. Returns the bytes (and writes them to
     `local_path` when given).
+
+    Pass `expected_size` whenever it is known - from the directory listing, or
+    from the data just uploaded. Without it the end of the file can only be
+    inferred from a short block, which means a file whose size is an exact
+    multiple of 512 always costs one request BEYOND the end. If the firmware
+    answers that with silence rather than an empty block, a fully received file
+    would be thrown away as a timeout. Silence cannot distinguish "end of file"
+    from "packet lost", so the size is the only sound way to tell them apart.
 
     Raises DncTimeout if the device goes silent mid-file: a partial G-code
     program must never be written out as if it were complete.
@@ -307,8 +315,19 @@ def download(remote_name, local_path=None):
                              what=f"block {block} of {remote_name!r}")
             payload = resp[6:]           # [00 39][block:4][payload...]
             data += payload
+            if expected_size is not None and len(data) >= expected_size:
+                if len(data) > expected_size:
+                    raise DncProtocolError(
+                        f"{remote_name!r}: the device sent {len(data)} bytes where "
+                        f"{expected_size} were expected."
+                    )
+                break                    # every byte accounted for; ask for nothing more
             if len(payload) < BLOCK:     # short block = end of file
-                break
+                break                    # ALSO checked when a size is known: the
+                                         # device may hold fewer bytes than expected
+                                         # (that is what a normalising firmware
+                                         # looks like), and without this the loop
+                                         # would request blocks for ever.
             block += 1
     finally:
         s.close()
@@ -326,7 +345,8 @@ def download_all(dest_dir):
     for entry in list_dir(""):
         if entry["is_dir"]:
             continue
-        data = download(entry["name"], os.path.join(dest_dir, entry["name"]))
+        data = download(entry["name"], os.path.join(dest_dir, entry["name"]),
+                        expected_size=entry["size"] or None)
         out.append((entry["name"], len(data)))
     return out
 
@@ -384,7 +404,10 @@ def upload(local_path, remote_name, verify=True):
 def verify_remote(remote_name, expected):
     """Read a file back from the device and compare it with `expected`.
     Raises DncVerifyError describing the first difference."""
-    got = download(remote_name)
+    # The size is known exactly here, so the read-back never has to guess where
+    # the file ends - which matters most for a program that is an exact multiple
+    # of the block size, the very case this verification is meant to cover.
+    got = download(remote_name, expected_size=len(expected) or None)
     if got == expected:
         return True
     if len(got) != len(expected):
