@@ -1,0 +1,54 @@
+name: tests
+
+# The suite needs no hardware: the wire format is built by pure functions and
+# the transfer logic runs against a scripted fake device and a fake serial port.
+# That is exactly why it is worth running here - the golden byte strings in
+# tests/test_protocol.py are the only copy of the reverse-engineered protocol
+# outside the physical box, and a refactor must never quietly change them.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pyserial flask
+
+      - name: Run the test suite
+        run: python -m pytest tests/ -q
+
+  # The FOCAS path is Windows-only (32-bit Fwlib32.dll). The DLL is not
+  # redistributable so it cannot be exercised here, but the modules must at
+  # least stay importable without it - that is the regression this catches.
+  imports-without-hardware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pyserial flask
+      - name: Importing must never kill the process
+        run: |
+          python -c "
+          import focas, focas_transfer, serial_adapter, dnc_tftp, transport, transfer_log, config
+          print('all modules import with no DLL and no serial port present')
+          "

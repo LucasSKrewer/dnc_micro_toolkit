@@ -47,6 +47,8 @@ class FakePort:
         self.is_open = True
         self.written = bytearray()
         self.closed_times = 0
+        self.write_timeout = 15
+        self.timeout_during_write = []
         self._chunks = list(chunks)
 
     def read(self, _n):
@@ -60,6 +62,7 @@ class FakePort:
 
     def write(self, data):
         self.written.extend(data)
+        self.timeout_during_write.append(self.write_timeout)
         return len(data)
 
     def flush(self):                 pass
@@ -184,30 +187,164 @@ def test_send_wraps_the_program_in_tape_markers(serial_rig, tmp_path):
     assert bytes(port.written) == b"%\r\nG01 X10\r\n%\r\n"
 
 
-def test_send_refuses_while_a_program_is_arriving(serial_rig, tmp_path, monkeypatch):
-    """Sending mid-reception would put both programs on the wire at once.
-
-    The other tests shorten the quiet timeout so they finish fast; this one puts
-    it back, because the whole point is to catch the transport WHILE a program
-    is still open - which is exactly the window that timeout defines.
-    """
+def test_listener_marks_the_line_busy_while_a_program_arrives(serial_rig, monkeypatch):
+    """Half of the busy guard: the listener must publish that the wire is in use."""
     tr, port, opens = serial_rig
-    monkeypatch.setattr(T, "QUIET_END_SECONDS", 30.0)
-    src = tmp_path / "1"
-    src.write_bytes(b"G01 X10")
+    monkeypatch.setattr(T, "QUIET_END_SECONDS", 30.0)   # keep the program open
 
     got, stop = [], threading.Event()
     run_listener(tr, got, stop)
     assert wait_for(lambda: len(opens) >= 1)
 
-    port.feed(b"%\nO1234\n")            # starts, does not finish
+    assert tr._receiving is False
+    port.feed(b"%\nO1234\n")                            # starts, does not finish
     assert wait_for(lambda: tr._receiving), "reception never registered"
+    stop.set()
+
+
+def test_send_refuses_when_the_line_is_busy(serial_rig, tmp_path):
+    """The other half: with the flag set, sending must be refused.
+
+    Deliberately NOT driven through a live listener thread. Doing that means
+    asserting on a state another thread can leave at any moment, and it failed
+    on a loaded CI runner while passing locally every time. The guard and the
+    flag are two separate properties, so they get two separate tests instead of
+    one racy test that only sometimes checks either.
+    """
+    tr, port, _ = serial_rig
+    src = tmp_path / "1"
+    src.write_bytes(b"G01 X10")
+
+    tr._receiving = True
 
     with pytest.raises(T.TransportBusy):
         tr.send(str(src))
-
-    stop.set()
     assert bytes(port.written) == b"", "nothing should have gone out on the wire"
+
+
+# ---------------------------------------------------------------- drip-feed
+#
+# Drip-feed runs while the machine is CUTTING. The properties worth pinning are
+# the ones that decide what happens when something goes wrong mid-job: that an
+# abort actually stops the wire, that it reports how far it got (the operator
+# needs to know where the program stopped), and that the long write timeout it
+# installs is put back afterwards - otherwise the next ordinary send inherits a
+# five-minute timeout and a dead cable looks like a hang.
+
+def test_drip_feed_streams_the_whole_program(serial_rig, tmp_path):
+    tr, port, opens = serial_rig
+    body = b"G01 X10\n" * 100
+    src = tmp_path / "big.nc"
+    src.write_bytes(body)
+
+    sent = tr.drip_feed(str(src))
+
+    expected = serial_adapter._wrap_tape(body)
+    assert bytes(port.written) == expected
+    assert sent == len(expected)
+    assert len(opens) == 1, "drip-feed reopened the port"
+
+
+def test_drip_feed_writes_in_chunks_not_one_blob(serial_rig, tmp_path):
+    tr, port, _ = serial_rig
+    src = tmp_path / "big.nc"
+    src.write_bytes(b"G01 X10\n" * 100)
+
+    tr.drip_feed(str(src))
+
+    # one write() per chunk: that is the granularity an abort can act on
+    assert len(port.timeout_during_write) > 1
+
+
+def test_drip_feed_reports_progress_to_the_end(serial_rig, tmp_path):
+    tr, port, _ = serial_rig
+    body = b"G01 X10\n" * 100
+    src = tmp_path / "big.nc"
+    src.write_bytes(body)
+
+    seen = []
+    tr.drip_feed(str(src), on_progress=lambda sent, total: seen.append((sent, total)))
+
+    total = len(serial_adapter._wrap_tape(body))
+    assert seen[-1] == (total, total)
+    assert [s for s, _ in seen] == sorted(s for s, _ in seen), "progress went backwards"
+
+
+def test_drip_feed_aborts_mid_job_and_says_where_it_stopped(serial_rig, tmp_path):
+    tr, port, _ = serial_rig
+    src = tmp_path / "big.nc"
+    src.write_bytes(b"G01 X10\n" * 500)
+
+    stop = threading.Event()
+
+    def brake(sent, total):
+        if sent >= 512:
+            stop.set()
+
+    with pytest.raises(serial_adapter.DripAborted) as excinfo:
+        tr.drip_feed(str(src), on_progress=brake, stop_event=stop)
+
+    assert excinfo.value.sent >= 512
+    assert excinfo.value.total > excinfo.value.sent
+    assert len(port.written) == excinfo.value.sent, "kept writing after the abort"
+
+
+def test_drip_feed_raises_the_write_timeout_then_restores_it(serial_rig, tmp_path):
+    """A control can hold XOFF for minutes during a slow pass; 15s would abort
+    a healthy job. But the raised timeout must not leak into the next send."""
+    tr, port, _ = serial_rig
+    src = tmp_path / "big.nc"
+    src.write_bytes(b"G01 X10\n" * 40)
+
+    tr.drip_feed(str(src))
+
+    assert set(port.timeout_during_write) == {serial_adapter.DRIP_WRITE_TIMEOUT}
+    assert port.write_timeout == 15, "the long drip timeout leaked out of the job"
+
+
+def test_drip_feed_restores_the_timeout_even_when_aborted(serial_rig, tmp_path):
+    tr, port, _ = serial_rig
+    src = tmp_path / "big.nc"
+    src.write_bytes(b"G01 X10\n" * 500)
+
+    stop = threading.Event()
+    with pytest.raises(serial_adapter.DripAborted):
+        tr.drip_feed(str(src), on_progress=lambda s, t: stop.set(), stop_event=stop)
+
+    assert port.write_timeout == 15
+
+
+def test_drip_feed_refuses_when_the_line_is_busy(serial_rig, tmp_path):
+    """Same split as the send guard: no live thread to race against."""
+    tr, port, _ = serial_rig
+    src = tmp_path / "big.nc"
+    src.write_bytes(b"G01 X10\n" * 10)
+
+    tr._receiving = True
+
+    with pytest.raises(T.TransportBusy):
+        tr.drip_feed(str(src))
+    assert bytes(port.written) == b""
+    assert port.write_timeout == 15, "the drip timeout leaked out of a refused job"
+
+
+def test_pace_throttles_the_stream(serial_rig, tmp_path):
+    """The crude brake for a control whose handshake cannot be trusted."""
+    tr, port, _ = serial_rig
+    src = tmp_path / "big.nc"
+    src.write_bytes(b"X" * (serial_adapter.DRIP_CHUNK * 3))
+
+    started = time.monotonic()
+    tr.drip_feed(str(src), pace=0.05)
+    elapsed = time.monotonic() - started
+
+    assert elapsed >= 0.10, f"pace was ignored (took {elapsed:.3f}s)"
+
+
+def test_only_serial_advertises_drip_feed():
+    assert T.SerialTransport.can_drip
+    assert not T.DncBoxTransport.can_drip
+    assert not T.FocasTransport.can_drip
 
 
 # ---------------------------------------------------------------- box + factory

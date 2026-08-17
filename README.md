@@ -1,5 +1,7 @@
 # DNC Micro Toolkit
 
+[![tests](https://github.com/LucasSKrewer/dnc_micro_toolkit/actions/workflows/tests.yml/badge.svg)](https://github.com/LucasSKrewer/dnc_micro_toolkit/actions/workflows/tests.yml)
+
 Python tools to transfer G-code programs (send/receive) between a PC/server and CNC
 machines over three different transports — with no dependency on proprietary DNC
 software such as CIMCO.
@@ -22,6 +24,8 @@ And around them:
 | `transport.py` | One `send` / `listen` / `browse` / `fetch` interface over all three transports. |
 | `dnc_web.py` | Shop-floor web panel for a Raspberry Pi: a Send button plus automatic background receiving. Drives **any** transport. |
 | `transfer_log.py` | Append-only CSV record of every program that moved, so the history survives a reboot. |
+| `focas_telemetry.py` | Read-only machine state over FOCAS: run state, program, alarms, feed and spindle. |
+| `hardware_check.py` | One-command acceptance run against the real DNC box — see [Acceptance](#acceptance-run). |
 | `dnc-web.service` | systemd unit for running the panel on a Pi. |
 | `tests/` | Test suite. Needs no hardware — see [Testing](#testing). |
 
@@ -93,6 +97,73 @@ sudo cp dnc-web.service /etc/systemd/system/ && sudo systemctl enable --now dnc-
 ```
 
 Per-script dependencies are listed in [`requirements.txt`](requirements.txt).
+
+## Streaming a program (drip-feed)
+
+"Copy to memory" needs the whole program to fit in the control's memory.
+Drip-feed does not: the control runs in DNC/tape mode and executes the program
+**as it arrives**, which is the only way to run a mould or a 3D finishing path
+on a control with 64 KB of program memory.
+
+```python
+import transport
+tr = transport.build("serial")
+tr.drip_feed("programs/mould.nc", on_progress=lambda sent, total: print(f"{sent}/{total}"))
+```
+
+It blocks for the whole job, reports progress per chunk, and accepts a
+`threading.Event` to abort between chunks. Flow control does the throttling:
+with `SERIAL_FLOW="xonxoff"` the control's XOFF pauses the stream when its
+look-ahead buffer fills.
+
+> ⚠️ **This has never run against a machine.** The machine is *cutting* while
+> this streams — if the feed stops it stops mid-cut, and if the control's buffer
+> overflows it executes garbage. Test it on a scrap part, in single block, with
+> the feed override at minimum and a hand on feed hold. The full warning is at
+> the top of the drip-feed section in `serial_adapter.py`.
+
+## Machine telemetry
+
+The same library that pushes a program reports what the machine is doing. This
+is read-only — nothing here writes a parameter, starts a cycle or clears an alarm.
+
+```
+py -3-32 focas_telemetry.py --watch 2
+```
+
+```
+--- 192.168.1.50  2026-08-16 21:00:00 ---
+  state        running / MEM / moving
+  program      O1234 (main O1234)
+  block        N120  G01 X10. F250.
+  cutting      F250  S1800
+  alarms       none
+```
+
+Each reading is taken independently, so a control that lacks `cnc_rdexecprog`
+still reports its run state instead of showing nothing. Also unvalidated: the
+ctypes structure layouts vary by control series, and a wrong layout returns
+plausible nonsense rather than an error.
+
+## Acceptance run
+
+Everything above is tested against fakes. `hardware_check.py` is the one command
+that settles what only the firmware can answer:
+
+```
+python hardware_check.py --ip 192.168.1.236
+python hardware_check.py --read-only          # safest; still answers Q2
+```
+
+It probes the box, lists the root, downloads an existing program and checks the
+size, then — after asking — uploads a canary, reads it back byte for byte, tests
+the 512-byte boundary and deletes the canary. It never issues RunFile or
+StopDnc, so nothing is sent to the machine, and it refuses to overwrite an
+existing file. The report it writes names which of these it settled:
+
+- **Q1** does the firmware store bytes exactly as sent, or normalise line endings?
+- **Q2** does a listing really end with the `0xFFFF` terminator?
+- **Q3** does block accounting hold under real UDP traffic?
 
 ## Testing
 
