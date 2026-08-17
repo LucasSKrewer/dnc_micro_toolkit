@@ -185,21 +185,34 @@ def main():
             return write_report(args.report)
 
     @check("Canary name is free (nothing will be overwritten)")
-    def _():
-        existing = [e["name"] for e in state.get("entries", [])]
-        if CANARY in existing:
+    def canary_is_free():
+        if "entries" not in state:
+            raise RuntimeError(
+                "The directory listing did not succeed, so there is no way to know "
+                "whether the canary name is taken. Refusing to write blind."
+            )
+        if CANARY in [e["name"] for e in state["entries"]]:
             raise RuntimeError(
                 f"{CANARY!r} already exists on the box. Refusing to overwrite it. "
                 "Delete it by hand first if it is left over from an earlier run."
             )
         return f"{CANARY!r} is free"
 
+    # This guard is a GATE, not a note in the report. Without the check below it
+    # printed "Refusing to overwrite it" and then the next step overwrote the
+    # file anyway, and the cleanup step deleted it.
+    if not canary_is_free:
+        print("    Write checks skipped - the box is not safe to write to.")
+        RESULTS.append({"name": "Write checks", "status": "SKIP",
+                        "detail": "the canary guard did not pass", "question": "Q1"})
+        return write_report(args.report)
+
     @check("Upload is stored byte for byte", "Q1")
     def _():
         # verify=False here on purpose: upload()'s own check would raise a bare
         # mismatch, and this run exists to DESCRIBE the mismatch, not just flag it.
         _upload_bytes(CANARY_BODY)
-        got = dnc.download(CANARY)
+        got = dnc.download(CANARY, expected_size=len(CANARY_BODY))
         if got == CANARY_BODY:
             return (f"{len(CANARY_BODY)} bytes returned identical.\n"
                     "ANSWER TO Q1: the firmware preserves bytes. "
@@ -216,6 +229,8 @@ def main():
     def _():
         body = (b"%\r\n" + b"(PAD)\r\n" * 80)[:512]
         _upload_bytes(body)
+        # Deliberately WITHOUT expected_size: this check exists to find out what
+        # the firmware does at the boundary, so it must not be told the answer.
         got = dnc.download(CANARY)
         if len(got) != 512:
             raise RuntimeError(
