@@ -476,3 +476,42 @@ def test_probe_helpers_stay_silent_instead_of_raising(monkeypatch, fast):
     install(monkeypatch, lambda pkt, n: None)
     assert d.get_status() is None
     assert d.get_info() is None
+
+
+def test_timeout_without_a_size_names_the_parameter_that_fixes_it(monkeypatch, fast):
+    """The bare timeout sends you to check cabling. It has to name the cause.
+
+    This is the one download failure a caller can fix from the message alone,
+    so the message carries it: no size was given, and list_dir() knows one.
+    """
+    def script(pkt, _n):
+        if d.opcode_of(pkt) == d.OP_DL_OPEN:
+            return struct.pack(">H", 55)
+        n = struct.unpack(">I", pkt[2:6])[0]
+        return _data(1, b"Z" * d.BLOCK) if n == 1 else None   # silent past the end
+
+    install(monkeypatch, script)
+    with pytest.raises(d.DncTimeout) as caught:
+        d.download("O1")
+    msg = str(caught.value)
+    assert "expected_size" in msg
+    assert "list_dir()" in msg
+    # It must NOT claim to know which of the two happened: a timeout always
+    # lands on a block boundary, so "end of file" and "lost packet" are
+    # indistinguishable here, and pretending otherwise misdirects.
+    assert "packet was lost" in msg
+
+
+def test_a_box_that_never_answers_is_not_blamed_on_the_missing_size(monkeypatch, fast):
+    """Nothing arrived at all - that is a dead box, not a missing parameter.
+
+    Adding the size hint here would send someone editing code when the real
+    problem is power, cabling or the local-port-69 rule.
+    """
+    def script(pkt, _n):
+        return struct.pack(">H", 55) if d.opcode_of(pkt) == d.OP_DL_OPEN else None
+
+    install(monkeypatch, script)
+    with pytest.raises(d.DncTimeout) as caught:
+        d.download("O1")
+    assert "expected_size" not in str(caught.value)
