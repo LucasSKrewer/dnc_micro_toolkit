@@ -74,6 +74,11 @@ DNC_PORT = setting("DNC_PORT", 69, int)         # TFTP (DEFAULT_PORT)
 # On a CNC a wrong program is a crash, not a typo - leave this on.
 VERIFY_UPLOAD = setting("VERIFY_UPLOAD", True, _as_bool)
 
+# ---------- WebDAV bridge (dnc_webdav.py) ----------
+# 80 makes the bridge a fixed address (http://<server>/) but is privileged:
+# the process needs admin on Windows, root or CAP_NET_BIND_SERVICE on Linux.
+WEBDAV_PORT = setting("WEBDAV_PORT", 8008, int)
+
 # ---------- Web (dnc_web.py) ----------
 # The model: sending is a "fixed file" (the operator just presses Send; whoever
 # swaps the file before each new part is production planning / engineering),

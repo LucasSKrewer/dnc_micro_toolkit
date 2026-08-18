@@ -29,7 +29,7 @@ import dnc_tftp as dnc
 from wsgidav.dav_error import DAVError, HTTP_FORBIDDEN
 from wsgidav.dav_provider import DAVCollection, DAVNonCollection, DAVProvider
 
-PORT = 8008   # change to 80 for a fixed service (needs admin/root)
+PORT = config.WEBDAV_PORT   # 80 for a fixed service (needs admin/root)
 
 
 def _qualify(devpath, name):
