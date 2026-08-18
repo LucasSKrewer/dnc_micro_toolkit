@@ -159,11 +159,35 @@ It probes the box, lists the root, downloads an existing program and checks the
 size, then — after asking — uploads a canary, reads it back byte for byte, tests
 the 512-byte boundary and deletes the canary. It never issues RunFile or
 StopDnc, so nothing is sent to the machine, and it refuses to overwrite an
-existing file. The report it writes names which of these it settled:
+existing file. The report it writes names which of these it settled.
 
-- **Q1** does the firmware store bytes exactly as sent, or normalise line endings?
-- **Q2** does a listing really end with the `0xFFFF` terminator?
-- **Q3** does block accounting hold under real UDP traffic?
+### What a real box answered
+
+Measured on one unit — a **MICRO DNC2** over WiFi. The device reports no
+firmware revision, so treat these as what this hardware does rather than as a
+guarantee about the protocol; that is exactly why the script ships, so you can
+find out about yours.
+
+- **Q1 — does the firmware store bytes exactly as sent?** It does. A 104-byte
+  canary and a 259,373-byte program carrying 14,141 CRLF pairs both came back
+  byte for byte identical. No line-ending normalisation, so **`VERIFY_UPLOAD`
+  can stay on** and the escape hatch is not needed here.
+- **Q2 — does a listing really end with the `0xFFFF` terminator?** Yes, in the
+  root and in subfolders. `list_dir()` raising on silence is not papering over
+  a device that merely goes quiet.
+- **Q3 — does block accounting hold under real UDP traffic?** Yes: 259,373
+  bytes over 507 blocks matched the listing exactly. But **the device never
+  sends the empty final block — it goes silent past the end of a file.** The
+  behaviour is asymmetric: it *accepts* an empty final block when receiving, it
+  just never *sends* one.
+
+That last point is why `download()` takes `expected_size`, and why it is not
+optional on this firmware: for a file whose length is an exact multiple of 512,
+a caller that does not supply the size cannot succeed, because the only other
+way to find the end is silence — and silence is indistinguishable from a lost
+packet. `list_dir()` reports the size, `download_all()` passes it through, and
+`verify_remote()` passes the length it just sent, so the ordinary paths are
+already covered.
 
 ## Testing
 
@@ -182,6 +206,9 @@ copy of that knowledge. If one of them fails, the code is wrong, not the test.
 ## DNC box protocol (technical summary)
 
 - **Transport:** UDP port 69, 512-byte blocks, 2 s timeout, up to 10 retransmissions.
+- **No empty final block on read:** the device goes silent past the end of a file
+  instead of sending one, so a download whose length is an exact multiple of 512
+  must be told the size. It does accept an empty final block when *receiving*.
 - **Framing:** a 2-byte big-endian opcode at the start of every packet. This is *not*
   standard RFC 1350 TFTP — it reuses port 69, but the packet format is proprietary.
 - **Symmetric port:** the device only answers datagrams sent **from** local port 69.

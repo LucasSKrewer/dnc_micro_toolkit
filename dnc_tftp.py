@@ -311,8 +311,30 @@ def download(remote_name, local_path=None, expected_size=None):
         _exchange(s, pkt_dl_open(remote_name), what=f"open download of {remote_name!r}")
         block = 1
         while True:
-            resp = _exchange(s, pkt_reqdata(block), accept=_accept_block(block),
-                             what=f"block {block} of {remote_name!r}")
+            try:
+                resp = _exchange(s, pkt_reqdata(block), accept=_accept_block(block),
+                                 what=f"block {block} of {remote_name!r}")
+            except DncTimeout as e:
+                # The bare timeout describes the symptom, not what to do about
+                # it. Note this cannot diagnose: a timeout always lands on a
+                # block boundary, because a short block ends the loop instead.
+                # So "the file ended here" and "a packet was lost" look the
+                # same from here - which is the whole reason silence is never
+                # read as end of file. Name both, and name the parameter that
+                # makes the first one stop being a failure.
+                if expected_size is None and data:
+                    raise DncTimeout(
+                        f"{e}\n{len(data)} bytes arrived so far and no "
+                        f"expected_size was given. Two different things look "
+                        f"exactly like this: the file ended here and the device "
+                        f"stays quiet past the end (this is what the Micro DNC 2 "
+                        f"does - it never sends the empty final block), or a "
+                        f"packet was lost mid-file. They cannot be told apart "
+                        f"without the size, so nothing can be returned. Pass "
+                        f"expected_size - list_dir() reports it - and the first "
+                        f"case stops being a failure."
+                    ) from e
+                raise
             payload = resp[6:]           # [00 39][block:4][payload...]
             data += payload
             if expected_size is not None and len(data) >= expected_size:

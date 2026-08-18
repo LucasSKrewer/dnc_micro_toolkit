@@ -83,6 +83,33 @@ def check(name, question=None):
     return run
 
 
+def _find_readable(state):
+    """Pick a file to read back: (qualified name, size, where it was found).
+
+    The root first, then one level down. On a box in actual use the root holds
+    only directories and the programs live inside one of them - which made this
+    check skip on exactly the hardware it was written to exercise. Returns None
+    when the box really has no file anywhere.
+    """
+    files = state.get("files") or []
+    if files:
+        target = max(files, key=lambda e: e["size"])
+        return target["name"], target["size"], "root"
+
+    for folder in [e for e in state.get("entries", []) if e["is_dir"]]:
+        devpath = "0:" + folder["name"]
+        try:
+            entries = dnc.list_dir(devpath)
+        except dnc.DncError:
+            continue          # an unreadable folder is not a reason to give up
+        inside = [e for e in entries
+                  if not e["is_dir"] and e["name"] not in (".", "..")]
+        if inside:
+            target = max(inside, key=lambda e: e["size"])
+            return f"{devpath}\\{target['name']}", target["size"], devpath
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser(description="Acceptance run against the real DNC box.")
     ap.add_argument("--ip", help="override DNC_IP for this run")
@@ -155,18 +182,25 @@ def main():
 
     @check("Download matches the size in the listing", "Q3")
     def _():
-        files = state.get("files") or []
-        if not files:
-            raise Skip("no file in the root to read - put any program on the box")
-        target = max(files, key=lambda e: e["size"])
-        data = dnc.download(target["name"])
+        found = _find_readable(state)
+        if not found:
+            raise Skip("no file anywhere on the box to read - put any program on it")
+        name, size, where = found
+        # The size is passed ON PURPOSE. This step is about block accounting
+        # holding over real UDP, not about inferring where a file ends without
+        # being told - that is the 512-byte boundary check below, which is
+        # deliberately kept size-free. Inferring here too would make this step
+        # time out on any box whose largest file happens to be an exact
+        # multiple of 512, and report "block accounting is off" against a
+        # client that is behaving correctly.
+        data = dnc.download(name, expected_size=size or None)
         state["read_back"] = len(data)
-        if target["size"] and len(data) != target["size"]:
+        if size and len(data) != size:
             raise RuntimeError(
-                f"{target['name']!r}: listing says {target['size']} bytes, "
+                f"{name!r}: listing says {size} bytes, "
                 f"download produced {len(data)}. Block accounting is off."
             )
-        return f"{target['name']!r}: {len(data)} bytes, matches the listing"
+        return f"{name!r} (in {where}): {len(data)} bytes, matches the listing"
 
     if args.read_only:
         print("\n[4] Write checks SKIPPED (--read-only)")
