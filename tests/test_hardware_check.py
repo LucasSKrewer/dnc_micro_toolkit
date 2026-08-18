@@ -280,3 +280,61 @@ def test_it_never_starts_or_stops_anything_on_the_machine(rig):
     assert d.OP_RUNFILE not in sent_opcodes
     assert d.OP_STOPDNC not in sent_opcodes
     assert d.OP_DELFOLDER not in sent_opcodes
+
+
+# ------------------------------------------------- picking a file to read back
+
+def test_it_looks_inside_a_folder_when_the_root_holds_only_directories(monkeypatch):
+    """A box in real use keeps its programs in a subfolder, not in the root.
+
+    Skipping there meant the run under-reported on exactly the hardware this
+    script was written for: the root lists two directories and nothing else.
+    """
+    state = {"entries": [{"name": "program", "is_dir": True, "size": 0}],
+             "files": []}
+
+    def fake_list_dir(devpath):
+        assert devpath == "0:program"
+        return [{"name": ".", "is_dir": True, "size": 0},
+                {"name": "..", "is_dir": True, "size": 0},
+                {"name": "3D.NC", "is_dir": False, "size": 259373}]
+
+    monkeypatch.setattr(d, "list_dir", fake_list_dir)
+    assert hc._find_readable(state) == (r"0:program\3D.NC", 259373, "0:program")
+
+
+def test_a_file_in_the_root_is_preferred_over_one_in_a_folder(monkeypatch):
+    """Cheapest first: no extra listing round-trip when the root already has one."""
+    state = {"entries": [{"name": "O1", "is_dir": False, "size": 10},
+                         {"name": "program", "is_dir": True, "size": 0}],
+             "files": [{"name": "O1", "is_dir": False, "size": 10}]}
+
+    def explode(_devpath):
+        raise AssertionError("must not list a folder when the root has a file")
+
+    monkeypatch.setattr(d, "list_dir", explode)
+    assert hc._find_readable(state) == ("O1", 10, "root")
+
+
+def test_an_unreadable_folder_does_not_abort_the_search(monkeypatch):
+    """One folder that will not list is not a reason to report 'no file'."""
+    state = {"entries": [{"name": "locked", "is_dir": True, "size": 0},
+                         {"name": "program", "is_dir": True, "size": 0}],
+             "files": []}
+
+    def fake_list_dir(devpath):
+        if devpath == "0:locked":
+            raise d.DncTimeout("no reply")
+        return [{"name": "O9", "is_dir": False, "size": 512}]
+
+    monkeypatch.setattr(d, "list_dir", fake_list_dir)
+    assert hc._find_readable(state) == (r"0:program\O9", 512, "0:program")
+
+
+def test_it_reports_nothing_when_the_box_really_is_empty(monkeypatch):
+    state = {"entries": [{"name": "program", "is_dir": True, "size": 0}],
+             "files": []}
+    monkeypatch.setattr(d, "list_dir", lambda _p: [
+        {"name": ".", "is_dir": True, "size": 0},
+        {"name": "..", "is_dir": True, "size": 0}])
+    assert hc._find_readable(state) is None
